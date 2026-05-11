@@ -30,10 +30,13 @@ import (
 	"github.com/Azure/ARO-HCP/internal/validation"
 )
 
-// NodePoolAdmissionContext carries dependencies that node pool mutation needs
-// beyond the node pool object itself, currently the parent cluster.
+// NodePoolAdmissionContext carries dependencies that node pool mutation/admission needs
+// beyond the node pool object itself. It includes the parent cluster and optionally
+// the service provider cluster and nodepool (for update-specific validations like version upgrades).
 type NodePoolAdmissionContext struct {
-	Cluster *api.HCPOpenShiftCluster
+	Cluster                 *api.HCPOpenShiftCluster
+	ServiceProviderNodePool *api.ServiceProviderNodePool
+	ServiceProviderCluster  *api.ServiceProviderCluster
 }
 
 // MutateNodePool applies admission-time mutations to a node pool (e.g. defaulting
@@ -68,58 +71,75 @@ func mutateNodePoolPlatform(ctx context.Context, admissionContext *NodePoolAdmis
 	return errs
 }
 
-// AdmitNodePool performs non-static checks of nodepool.  Checks that require more information than is contained inside of
-// of the nodepool instance itself.
-func AdmitNodePool(newNodePool, oldNodePool *api.HCPOpenShiftClusterNodePool, cluster *api.HCPOpenShiftCluster) field.ErrorList {
+// AdmitNodePool performs non-static checks of nodepool. Checks that require more information than is contained inside of
+// the nodepool instance itself. For update operations with version changes, include ServiceProviderNodePool and
+// ServiceProviderCluster in the admissionContext to enable version upgrade validation.
+func AdmitNodePool(ctx context.Context, admissionContext *NodePoolAdmissionContext, op operation.Operation, newNodePool, oldNodePool *api.HCPOpenShiftClusterNodePool) field.ErrorList {
 	errs := field.ErrorList{}
 
-	// Check only if it is a creating nodepool or a change in the channelGroup
-	if (oldNodePool == nil || newNodePool.Properties.Version.ChannelGroup != oldNodePool.Properties.Version.ChannelGroup) &&
-		newNodePool.Properties.Version.ChannelGroup != cluster.CustomerProperties.Version.ChannelGroup {
-		errs = append(errs, field.Invalid(
-			field.NewPath("properties", "version", "channelGroup"),
-			newNodePool.Properties.Version.ChannelGroup,
-			fmt.Sprintf("must be the same as control plane channel group '%s'", cluster.CustomerProperties.Version.ChannelGroup),
-		))
-	}
+	errs = append(errs, admitNodePoolProperties(ctx, admissionContext, op, field.NewPath("properties"), &newNodePool.Properties, safe.Field(oldNodePool, validation.ToNodePoolProperties))...)
 
-	// Check only if it is a creating nodepool or a change in the Subnet.
-	// Compare by string value (not pointer identity) so equal-but-distinct
-	// *azcorearm.ResourceID values aren't treated as a change.
-	if newNodePool.Properties.Platform.SubnetID != nil && cluster.CustomerProperties.Platform.SubnetID != nil {
-		var oldSubnetID string
-		if oldNodePool != nil && oldNodePool.Properties.Platform.SubnetID != nil {
-			oldSubnetID = oldNodePool.Properties.Platform.SubnetID.String()
-		}
-		newSubnetID := newNodePool.Properties.Platform.SubnetID.String()
-		if oldNodePool == nil || !strings.EqualFold(newSubnetID, oldSubnetID) {
-			clusterVNet := cluster.CustomerProperties.Platform.SubnetID.Parent.String()
-			nodePoolVNet := newNodePool.Properties.Platform.SubnetID.Parent.String()
-			if !strings.EqualFold(nodePoolVNet, clusterVNet) {
-				errs = append(errs, field.Invalid(
-					field.NewPath("properties", "platform", "subnetId"),
-					newNodePool.Properties.Platform.SubnetID,
-					fmt.Sprintf("must belong to the same VNet as the parent cluster VNet '%s'", clusterVNet),
-				))
-			}
-		}
+	// Perform update-specific version upgrade validation if operation type is update
+	if op.Type == operation.Update {
+		errs = append(errs, validateNodePoolVersionUpgrade(ctx, admissionContext, op, newNodePool, oldNodePool)...)
 	}
 
 	return errs
 }
 
-// AdmitNodePoolUpdate performs update-specific validation that requires both the old and new node pool states.
-// It includes all validations from AdmitNodePool plus version upgrade constraints.
-// The spNodePool and spCluster parameters provide the service provider state for version validation.
-func AdmitNodePoolUpdate(newNodePool, oldNodePool *api.HCPOpenShiftClusterNodePool, cluster *api.HCPOpenShiftCluster,
-	spNodePool *api.ServiceProviderNodePool, spCluster *api.ServiceProviderCluster, op operation.Operation) field.ErrorList {
+func admitNodePoolProperties(ctx context.Context, admissionContext *NodePoolAdmissionContext, op operation.Operation, fldPath *field.Path, newObj, oldObj *api.HCPOpenShiftClusterNodePoolProperties) field.ErrorList {
 	errs := field.ErrorList{}
 
-	// Include all standard node pool admission checks
-	errs = append(errs, AdmitNodePool(newNodePool, oldNodePool, cluster)...)
+	errs = append(errs, admitNodePoolVersion(ctx, admissionContext, op, fldPath.Child("version"), &newObj.Version, safe.Field(oldObj, validation.ToNodePoolPropertiesVersion))...)
+	errs = append(errs, admitNodePoolPlatform(ctx, admissionContext, op, fldPath.Child("platform"), &newObj.Platform, safe.Field(oldObj, validation.ToNodePoolPropertiesPlatform))...)
 
-	// Add update-specific version upgrade validation
-	errs = append(errs, validateNodePoolVersionUpgrade(newNodePool, oldNodePool, spNodePool, spCluster, op)...)
+	return errs
+}
+
+func admitNodePoolVersion(ctx context.Context, admissionContext *NodePoolAdmissionContext, op operation.Operation, fldPath *field.Path, newObj, oldObj *api.NodePoolVersionProfile) field.ErrorList {
+	errs := field.ErrorList{}
+
+	clusterVersion := &admissionContext.Cluster.CustomerProperties.Version
+
+	// Check only if it is a creating nodepool or a change in the channelGroup
+	if (op.Type == operation.Create || newObj.ChannelGroup != oldObj.ChannelGroup) &&
+		newObj.ChannelGroup != clusterVersion.ChannelGroup {
+		errs = append(errs, field.Invalid(
+			fldPath.Child("channelGroup"),
+			newObj.ChannelGroup,
+			fmt.Sprintf("must be the same as control plane channel group '%s'", clusterVersion.ChannelGroup),
+		))
+	}
+
+	return errs
+}
+
+func admitNodePoolPlatform(ctx context.Context, admissionContext *NodePoolAdmissionContext, op operation.Operation, fldPath *field.Path, newObj, oldObj *api.NodePoolPlatformProfile) field.ErrorList {
+	errs := field.ErrorList{}
+
+	clusterPlatform := &admissionContext.Cluster.CustomerProperties.Platform
+
+	// Check only if it is a creating nodepool or a change in the Subnet.
+	// Compare by string value (not pointer identity) so equal-but-distinct
+	// *azcorearm.ResourceID values aren't treated as a change.
+	if newObj.SubnetID != nil && clusterPlatform.SubnetID != nil {
+		var oldSubnetID string
+		if op.Type == operation.Update && oldObj.SubnetID != nil {
+			oldSubnetID = oldObj.SubnetID.String()
+		}
+		newSubnetID := newObj.SubnetID.String()
+		if op.Type == operation.Create || !strings.EqualFold(newSubnetID, oldSubnetID) {
+			clusterVNet := clusterPlatform.SubnetID.Parent.String()
+			nodePoolVNet := newObj.SubnetID.Parent.String()
+			if !strings.EqualFold(nodePoolVNet, clusterVNet) {
+				errs = append(errs, field.Invalid(
+					fldPath.Child("subnetId"),
+					newObj.SubnetID,
+					fmt.Sprintf("must belong to the same VNet as the parent cluster VNet '%s'", clusterVNet),
+				))
+			}
+		}
+	}
 
 	return errs
 }
@@ -130,8 +150,8 @@ func AdmitNodePoolUpdate(newNodePool, oldNodePool *api.HCPOpenShiftClusterNodePo
 //   - No major version change: new major == old major (unless FeatureExperimentalReleaseFeatures is registered)
 //   - No skipping minor versions: new minor <= old minor + 1
 //   - Cannot exceed cluster version: new version <= cluster version
-func validateNodePoolVersionUpgrade(newNodePool, oldNodePool *api.HCPOpenShiftClusterNodePool, spNodePool *api.ServiceProviderNodePool, spCluster *api.ServiceProviderCluster, op operation.Operation) field.ErrorList {
-
+func validateNodePoolVersionUpgrade(ctx context.Context, admissionContext *NodePoolAdmissionContext, op operation.Operation, newNodePool, oldNodePool *api.HCPOpenShiftClusterNodePool) field.ErrorList {
+	spNodePool, spCluster := admissionContext.ServiceProviderNodePool, admissionContext.ServiceProviderCluster
 	// Skip validation if no version is specified or version didn't change
 	if len(newNodePool.Properties.Version.ID) == 0 || newNodePool.Properties.Version.ID == oldNodePool.Properties.Version.ID {
 		return nil

@@ -277,7 +277,7 @@ func (f *Frontend) createNodePool(writer http.ResponseWriter, request *http.Requ
 
 	validationErrs := validation.ValidateNodePool(ctx, restOperation, newInternalNodePool, nil)
 	// in addition to static validation, we have validation based on the state of the hcp cluster
-	validationErrs = append(validationErrs, admission.AdmitNodePool(newInternalNodePool, nil, cluster)...)
+	validationErrs = append(validationErrs, admission.AdmitNodePool(ctx, admissionContext, restOperation, newInternalNodePool, nil)...)
 	if err := arm.CloudErrorFromFieldErrors(validationErrs); err != nil {
 		return utils.TrackError(err)
 	}
@@ -565,8 +565,10 @@ func (f *Frontend) updateNodePoolInCosmos(ctx context.Context, writer http.Respo
 
 	validationErrs := validation.ValidateNodePool(ctx, restOperation, newInternalNodePool, oldInternalNodePool)
 	// in addition to static validation, we have validation based on the state of the hcp cluster
-	// AdmitNodePoolUpdate includes AdmitNodePool checks plus version upgrade validation
-	validationErrs = append(validationErrs, admission.AdmitNodePoolUpdate(newInternalNodePool, oldInternalNodePool, cluster, spNodePool, spCluster, restOperation)...)
+	// Include service provider state in context for version upgrade validation
+	admissionContext.ServiceProviderNodePool = spNodePool
+	admissionContext.ServiceProviderCluster = spCluster
+	validationErrs = append(validationErrs, admission.AdmitNodePool(ctx, admissionContext, restOperation, newInternalNodePool, oldInternalNodePool)...)
 	if err := arm.CloudErrorFromFieldErrors(validationErrs); err != nil {
 		return utils.TrackError(err)
 	}
