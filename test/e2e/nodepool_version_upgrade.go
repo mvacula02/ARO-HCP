@@ -245,8 +245,6 @@ var _ = Describe("Customer", func() {
 	// version exists in Cincinnati, not that an edge exists from the current version.
 	DescribeTable("should upgrade a nodepool to a version without Cincinnati upgrade edge",
 		func(ctx context.Context, minor string) {
-			Skip("skipped until PR #5184 is merged and deployed")
-
 			channelGroup := framework.DefaultOpenshiftChannelGroup()
 
 			fromVersion, toVersion, err := framework.GetVersionPairWithoutUpgradeEdge(ctx, channelGroup, minor)
