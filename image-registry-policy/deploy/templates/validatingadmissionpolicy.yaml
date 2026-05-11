@@ -45,7 +45,11 @@ spec:
       object.spec.containers.map(c, c.image) + object.spec.?initContainers.orValue([]).map(c, c.image) + object.spec.?ephemeralContainers.orValue([]).map(c, c.image)
   - name: allowedPrefixes
     expression: "params.data.allowedRegistries.split(',')"
+  - name: disallowedImages
+    expression: >-
+      variables.allImages.filter(img,
+        !variables.allowedPrefixes.exists(prefix, img.startsWith(prefix + '/') || img.startsWith(prefix + '@')))
   validations:
-  - expression: "variables.allImages.all(img, variables.allowedPrefixes.exists(prefix, img.startsWith(prefix + '/') || img.startsWith(prefix + '@') || ))"
-    messageExpression: "'One or more container images are not from an allowed registry. Allowed registries: ' + params.data.allowedRegistries + '. Images: ' + variables.allImages.filter(img, !variables.allowedPrefixes.exists(prefix, img.startsWith(prefix + '/') || img.startsWith(prefix + '@') || img.startsWith(prefix + ':'))).join(', ')"
+  - expression: "variables.disallowedImages.size() == 0"
+    messageExpression: "'One or more container images are not from an allowed registry. Allowed registries: ' + params.data.allowedRegistries + '. Images: ' + variables.disallowedImages.join(', ')"
     reason: Forbidden
