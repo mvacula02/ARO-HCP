@@ -1,6 +1,6 @@
 # This policy enforces FSI image sourcing requirements by restricting all pod
-# container images to a set of allowed registries. Images not matching any
-# allowed registry prefix are denied at admission time.
+# container images to a set of allowed registries. The enforcement action
+# (Deny or Audit) is configured per-environment via the policy binding.
 #
 # The allowed registry list is provided via a ConfigMap parameter so it can be
 # managed independently of the policy definition.
