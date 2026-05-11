@@ -48,7 +48,8 @@ spec:
   - name: disallowedImages
     expression: >-
       variables.allImages.filter(img,
-        !variables.allowedPrefixes.exists(prefix, img.startsWith(prefix + '/') || img.startsWith(prefix + '@')))
+        !variables.allowedPrefixes.exists(prefix, img.startsWith(prefix + '/') || img.startsWith(prefix + '@'))
+        && !img.startsWith('quay.io/redhat-user-workloads/crt-redhat-acm-tenant/control-plane-operator-'))
   validations:
   - expression: "variables.disallowedImages.size() == 0"
     messageExpression: "'One or more container images are not from an allowed registry. Allowed registries: ' + params.data.allowedRegistries + '. Images: ' + variables.disallowedImages.join(', ')"
