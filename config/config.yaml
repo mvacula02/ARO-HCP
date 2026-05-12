@@ -1208,10 +1208,9 @@ clouds:
       # Image Registry Policy — dev-only registries for local dev tooling
       imageRegistryPolicy:
         extraAllowedRegistries:
-        - docker.io
-        - jaegertracing
-        - grafana
-        - otel
+        - docker.io/jaegertracing
+        - docker.io/grafana
+        - docker.io/otel
         validationActions:
         - Deny
       # ACRs

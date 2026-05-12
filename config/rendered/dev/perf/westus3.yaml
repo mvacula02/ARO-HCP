@@ -415,10 +415,9 @@ hypershift:
     repository: redhat-user-workloads/crt-redhat-acm-tenant/hypershift-shared-ingress-main
 imageRegistryPolicy:
   extraAllowedRegistries:
-  - docker.io
-  - jaegertracing
-  - grafana
-  - otel
+  - docker.io/jaegertracing
+  - docker.io/grafana
+  - docker.io/otel
   validationActions:
   - Deny
 imageSync:
